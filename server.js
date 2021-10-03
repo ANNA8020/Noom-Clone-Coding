@@ -1,5 +1,6 @@
 import http from "http";
-import SocketIO from "socket.io";
+import { Server } from "socket.io";
+import { instrument } from "@socket.io/admin-ui";
 import express from "express";
 
  const app = express();
@@ -12,11 +13,35 @@ import express from "express";
  app.get("/*", (_,res) => res.redirect("/"));
  
 const httpServer = http.createServer(app);
-const io = SocketIO(httpServer);
+const io = new Server(httpServer, { cors: {
+    origin: ["https://admin.socket.io"],
+    credentials: true
+  },
+});
+  instrument(io, {
+    auth: false,
+});
+
+function publicRooms() {
+    const { sockets: {adapter: {sids, rooms }, }, } = io;
+    const publicRooms = [];
+    rooms.forEach((_, key) => {
+        if (sids.get(key) === undefined) {
+            publicRooms.push(key);
+        }
+    });
+    return publicRooms;
+}
+
+function countRoom(roomName) {
+    return io.sockets.adapter.rooms.get(roomName)?.size
+    // 어떨 때는 roomName을 찾을 수도 있지만 아닐 때롤 대비하여 ? ← 산입
+}
 
 io.on("connection", (socket) => {
     socket["nickname"] = "Anon";
     socket.onAny((event) => {
+        console.log(io.sockets.adapter);
         console.log(`Socket Event: ${event}`);
     });
     socket.on("enter_room", (roomName, done) => {
@@ -24,11 +49,18 @@ io.on("connection", (socket) => {
         socket.join(roomName);
         // 방에 들어가기 위함
         done();
-        socket.to(roomName).emit("welcome", socket.nickname);
+        socket.to(roomName).emit("welcome", socket.nickname, countRoom(roomName));
+        // 하나의 socket에만 메세지 보내기 
+        io.sockets.emit("room_change", publicRooms());
+        // 모든 sockets에 메세지 보내기
     });
     socket.on("disconnecting", () => {
         socket.rooms.forEach((room) => 
-        socket.to(room).emit("bye", socket.nickname));
+        socket.to(room).emit("bye", socket.nickname, countRoom(room) - 1)
+        );
+    });
+    socket.on("disconnect", () => {
+        io.sockets.emit("room_change", publicRooms());
     });
     socket.on("new_message", (msg, room, done) => {
         socket.to(room).emit("new_message", `${socket.nickname}: ${msg}`);
